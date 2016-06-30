@@ -2,6 +2,7 @@ package jdb
 
 import (
 	"io/ioutil"
+	"log"
 	"testing"
 )
 
@@ -11,8 +12,8 @@ func TestDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp.Close()
-	defer os.RemoveFile(fp.Name())
-	//log.Println(fp.Name())
+	//defer os.Remove(fp.Name())
+	log.Println(fp.Name())
 	db, err := New(fp.Name(), nil)
 	if err != nil {
 		t.Fatal(err)

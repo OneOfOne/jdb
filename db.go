@@ -27,6 +27,9 @@ type Decoder interface {
 type Opts struct {
 	GetEncoder func(w io.Writer) Encoder
 	GetDecoder func(r io.Reader) Decoder
+
+	CopyOnSet bool
+	CopyOnGet bool
 }
 
 var (
@@ -52,12 +55,15 @@ type DB struct {
 	mux sync.RWMutex
 	f   *os.File
 
-	s map[string][]byte
+	s map[string]Value
 
 	txPool sync.Pool
 
 	encodeFn func(interface{}) error
 	decodeFn func(interface{}) error
+
+	copyOnSet bool
+	copyOnGet bool
 
 	stats struct {
 		Rollbacks int64
@@ -75,10 +81,12 @@ func New(fp string, opts *Opts) (*DB, error) {
 	}
 
 	db := &DB{
-		f:        f,
-		encodeFn: opts.GetEncoder(f).Encode,
-		decodeFn: opts.GetDecoder(f).Decode,
-		s:        map[string][]byte{},
+		f:         f,
+		encodeFn:  opts.GetEncoder(f).Encode,
+		decodeFn:  opts.GetDecoder(f).Decode,
+		s:         map[string]Value{},
+		copyOnSet: opts.CopyOnSet,
+		copyOnGet: opts.CopyOnGet,
 	}
 
 	db.txPool.New = func() interface{} { return &Tx{db: db, s: storage{}} }
@@ -105,7 +113,11 @@ func (db *DB) load() error {
 		for k, v := range tx.Data {
 			switch v.Type {
 			case entrySet:
-				db.s[k] = v.Value
+				if db.copyOnSet {
+					db.s[k] = Value(v.Value.Copy())
+				} else {
+					db.s[k] = v.Value
+				}
 			case entryDelete:
 				delete(db.s, k)
 			}
@@ -180,10 +192,13 @@ func (db *DB) Close() error {
 	return db.f.Close()
 }
 
-func (db *DB) Get(k string) []byte {
+func (db *DB) Get(k string) Value {
 	db.mux.RLock()
 	v := db.s[k]
 	db.mux.RUnlock()
+	if db.copyOnGet {
+		return v.Copy()
+	}
 	return v
 }
 

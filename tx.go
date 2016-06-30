@@ -10,9 +10,19 @@ var (
 	ErrReadOnly = errors.New("readonly tx")
 )
 
+type Value []byte
+
+func (v Value) String() string { return string(v) }
+func (v Value) Raw() []byte    { return []byte(v) }
+func (v Value) Copy() []byte {
+	cp := make([]byte, len(v))
+	copy(cp, v)
+	return cp
+}
+
 type entry struct {
-	Value []byte `json:"v,omitempty"`
-	Type  uint8  `json:"t,omitempty"`
+	Value Value `json:"v,omitempty"`
+	Type  uint8 `json:"t,omitempty"`
 }
 
 type storage map[string]entry
@@ -28,22 +38,34 @@ type Tx struct {
 	rw bool
 }
 
-func (tx *Tx) Get(k string) []byte {
+func (tx *Tx) Get(k string) Value {
+	var out Value
 	if v, ok := tx.s[k]; ok {
-		return v.Value
+		out = v.Value
+	} else {
+		out = tx.db.s[k]
 	}
-	return tx.db.s[k]
+	if tx.db.copyOnGet {
+		return out.Copy()
+	}
+	return out
 }
 
 func (tx *Tx) GetObject(k string, v interface{}) error {
-	return binny.Unmarshal(tx.Get(k), v)
+	var out Value
+	if v, ok := tx.s[k]; ok {
+		out = v.Value
+	} else {
+		out = tx.db.s[k]
+	}
+	return binny.Unmarshal(out, v)
 }
 
 func (tx *Tx) Set(k string, v []byte) error {
 	if !tx.rw {
 		return ErrReadOnly
 	}
-	tx.s[k] = entry{v, entrySet}
+	tx.s[k] = entry{Value(v), entrySet}
 	return nil
 }
 
