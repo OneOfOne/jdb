@@ -21,15 +21,17 @@ func (v Value) Copy() []byte {
 }
 
 type entry struct {
-	Value Value `json:"v,omitempty"`
-	Type  uint8 `json:"t,omitempty"`
+	Value Value `json:"value,omitempty"`
+	Type  uint8 `json:"type,omitempty"`
 }
 
 type storage map[string]entry
 
 type fileTx struct {
-	TS   int64   `json:"ts"`
-	Data storage `json:"v,omitempty"`
+	Index       uint64           `json:"idx,omitempty"`
+	TS          int64            `json:"ts,omitempty"`
+	CompactData map[string]Value `json:"compactData,omitempty"`
+	Data        storage          `json:"data,omitempty"`
 }
 
 type Tx struct {
@@ -45,7 +47,7 @@ func (tx *Tx) Get(k string) Value {
 	} else {
 		out = tx.db.s[k]
 	}
-	if tx.db.copyOnGet {
+	if tx.db.opts.CopyOnGet {
 		return out.Copy()
 	}
 	return out

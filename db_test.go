@@ -3,6 +3,7 @@ package jdb
 import (
 	"io/ioutil"
 	"log"
+	"os"
 	"testing"
 )
 
@@ -12,8 +13,8 @@ func TestDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp.Close()
-	//defer os.Remove(fp.Name())
-	log.Println(fp.Name())
+	defer os.Remove(fp.Name())
+	//log.Println(fp.Name())
 	db, err := New(fp.Name(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +44,7 @@ func TestDB(t *testing.T) {
 		}
 		return nil
 	})
+	log.Println(db.Compact(nil))
 	db.Close()
 
 	if db, err = New(fp.Name(), nil); err != nil {
@@ -57,8 +59,7 @@ func TestDB(t *testing.T) {
 	})
 
 	db.Update(func(tx *Tx) error {
-		tx.Set("c", []byte("c"))
-		return nil
+		return tx.Set("c", []byte("c"))
 	})
 	db.Close()
 }

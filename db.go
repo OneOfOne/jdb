@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"io"
+	"io/ioutil"
 	"os"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 const (
 	entrySet = iota
 	entryDelete
+	entryCompact
 )
 
 type Encoder interface {
@@ -48,7 +50,7 @@ var (
 		GetDecoder: func(r io.Reader) Decoder { return binny.NewDecoder(r) },
 	}
 
-	DefaultOpts = JSON
+	defaultOpts = JSON
 )
 
 type DB struct {
@@ -57,13 +59,14 @@ type DB struct {
 
 	s map[string]Value
 
+	maxIndex uint64
+
 	txPool sync.Pool
 
 	encodeFn func(interface{}) error
 	decodeFn func(interface{}) error
 
-	copyOnSet bool
-	copyOnGet bool
+	opts Opts
 
 	stats struct {
 		Rollbacks int64
@@ -76,26 +79,35 @@ func New(fp string, opts *Opts) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if opts == nil {
-		opts = &DefaultOpts
+		opts = &defaultOpts
+	}
+
+	if opts.GetEncoder == nil || opts.GetDecoder == nil {
+		opts.GetEncoder = defaultOpts.GetEncoder
+		opts.GetDecoder = defaultOpts.GetDecoder
 	}
 
 	db := &DB{
-		f:         f,
-		encodeFn:  opts.GetEncoder(f).Encode,
-		decodeFn:  opts.GetDecoder(f).Decode,
-		s:         map[string]Value{},
-		copyOnSet: opts.CopyOnSet,
-		copyOnGet: opts.CopyOnGet,
+		s:    map[string]Value{},
+		opts: *opts,
 	}
-
+	db.init(f)
 	db.txPool.New = func() interface{} { return &Tx{db: db, s: storage{}} }
 
 	if err = db.load(); err != nil {
 		return nil, err
 	}
+	db.maxIndex++
 	_, err = db.f.Seek(0, os.SEEK_END)
 	return db, err
+}
+
+func (db *DB) init(f *os.File) {
+	db.f = f
+	db.encodeFn = db.opts.GetEncoder(f).Encode
+	db.decodeFn = db.opts.GetDecoder(f).Decode
 }
 
 func (db *DB) load() error {
@@ -113,7 +125,7 @@ func (db *DB) load() error {
 		for k, v := range tx.Data {
 			switch v.Type {
 			case entrySet:
-				if db.copyOnSet {
+				if db.opts.CopyOnSet {
 					db.s[k] = Value(v.Value.Copy())
 				} else {
 					db.s[k] = v.Value
@@ -122,6 +134,10 @@ func (db *DB) load() error {
 				delete(db.s, k)
 			}
 		}
+		for k, v := range tx.CompactData {
+			db.s[k] = v
+		}
+		db.maxIndex = tx.Index
 	}
 }
 
@@ -146,7 +162,11 @@ func (db *DB) writeTx(tx *Tx) error {
 		return err
 	}
 
-	if err := db.encodeFn(&fileTx{time.Now().Unix(), tx.s}); err != nil {
+	if err := db.encodeFn(&fileTx{
+		Index: db.maxIndex,
+		TS:    time.Now().Unix(),
+		Data:  tx.s,
+	}); err != nil {
 		db.stats.Rollbacks++
 		db.f.Truncate(curPos)
 		return err
@@ -160,7 +180,7 @@ func (db *DB) writeTx(tx *Tx) error {
 		}
 	}
 	db.stats.Commits++
-
+	db.maxIndex++
 	return db.f.Sync()
 }
 
@@ -196,7 +216,7 @@ func (db *DB) Get(k string) Value {
 	db.mux.RLock()
 	v := db.s[k]
 	db.mux.RUnlock()
-	if db.copyOnGet {
+	if db.opts.CopyOnGet {
 		return v.Copy()
 	}
 	return v
@@ -219,4 +239,36 @@ func (db *DB) SetObject(k string, v interface{}) error {
 	return db.Update(func(tx *Tx) error {
 		return tx.SetObject(k, v)
 	})
+}
+
+// TODO optimize
+func (db *DB) Compact(convertFn func(w io.Writer) Encoder) error {
+	db.mux.Lock()
+	defer db.mux.Unlock()
+
+	f, err := ioutil.TempFile("", "compact.jdb")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			f.Close()
+			os.Remove(f.Name())
+		}
+	}()
+	if convertFn == nil {
+		convertFn = db.opts.GetEncoder
+	}
+
+	if err = convertFn(f).Encode(&fileTx{
+		Index:       db.maxIndex,
+		TS:          time.Now().Unix(),
+		CompactData: db.s,
+	}); err != nil {
+		return err
+	}
+	db.f.Close()
+	err = os.Rename(f.Name(), db.f.Name())
+	db.init(f)
+	return err
 }
