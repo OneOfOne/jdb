@@ -135,7 +135,7 @@ func (db *DB) writeTx(tx *Tx) error {
 
 	if err := db.encodeFn(&fileTx{time.Now().Unix(), tx.s}); err != nil {
 		db.stats.Rollbacks++
-		db.f.Seek(curPos, os.SEEK_SET)
+		db.f.Truncate(curPos)
 		return err
 	}
 	for k, v := range tx.s {
