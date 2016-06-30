@@ -1,13 +1,10 @@
 package jdb
 
 import (
-	"encoding/gob"
 	"errors"
-)
 
-func init() {
-	gob.Register(&fileTx{})
-}
+	"github.com/missionMeteora/binny.v2"
+)
 
 var (
 	ErrReadOnly = errors.New("readonly tx")
@@ -27,7 +24,7 @@ type fileTx struct {
 
 type Tx struct {
 	db  *DB
-	tmp map[string]entry
+	tmp storage
 	rw  bool
 }
 
@@ -38,12 +35,24 @@ func (tx *Tx) Get(k string) []byte {
 	return tx.db.s[k]
 }
 
+func (tx *Tx) GetObject(k string, v interface{}) error {
+	return binny.Unmarshal(tx.Get(k), v)
+}
+
 func (tx *Tx) Set(k string, v []byte) error {
 	if !tx.rw {
 		return ErrReadOnly
 	}
 	tx.tmp[k] = entry{v, entrySet}
 	return nil
+}
+
+func (tx *Tx) SetObject(k string, v interface{}) error {
+	bv, err := binny.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return tx.Set(k, bv)
 }
 
 func (tx *Tx) Delete(k string) error {

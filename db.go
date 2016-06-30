@@ -1,10 +1,11 @@
 package jdb
 
 import (
-	"encoding/gob"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/missionMeteora/binny.v2"
 )
 
 const (
@@ -33,13 +34,13 @@ func New(fp string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	enc := gob.NewEncoder(f)
+	enc := binny.NewEncoder(f)
 	db := &DB{
 		f:        f,
 		encodeFn: func(tx *fileTx) error { return enc.Encode(tx) },
 		s:        map[string][]byte{},
 	}
-	db.txPool.New = func() interface{} { return &Tx{db: db, tmp: map[string]entry{}} }
+	db.txPool.New = func() interface{} { return &Tx{db: db, tmp: storage{}} }
 	//db.load()
 
 	return db, nil
@@ -112,8 +113,28 @@ func (db *DB) Close() error {
 	return db.f.Close()
 }
 
+func (db *DB) Get(k string) []byte {
+	db.mux.RLock()
+	v := db.s[k]
+	db.mux.RUnlock()
+	return v
+}
+
+func (db *DB) GetObject(k string, v interface{}) error {
+	db.mux.RLock()
+	bv := db.s[k]
+	db.mux.RUnlock()
+	return binny.Unmarshal(bv, v)
+}
+
 func (db *DB) Set(k string, v []byte) error {
 	return db.Update(func(tx *Tx) error {
 		return tx.Set(k, v)
+	})
+}
+
+func (db *DB) SetObject(k string, v interface{}) error {
+	return db.Update(func(tx *Tx) error {
+		return tx.SetObject(k, v)
 	})
 }
