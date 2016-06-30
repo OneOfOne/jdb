@@ -1,8 +1,7 @@
 package jdb
 
 import (
-	"encoding/json"
-	"io"
+	"encoding/gob"
 	"os"
 	"sync"
 	"time"
@@ -13,17 +12,11 @@ const (
 	entryDelete
 )
 
-type ReadWriteFlushCloser interface {
-	io.Reader
-	io.Writer
-	io.Closer
-}
-
 type DB struct {
 	mux sync.RWMutex
 	f   *os.File
 
-	s map[string]string
+	s map[string][]byte
 
 	txPool sync.Pool
 
@@ -40,13 +33,13 @@ func New(fp string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	enc := json.NewEncoder(f)
+	enc := gob.NewEncoder(f)
 	db := &DB{
 		f:        f,
 		encodeFn: func(tx *fileTx) error { return enc.Encode(tx) },
-		s:        map[string]string{},
+		s:        map[string][]byte{},
 	}
-	db.txPool.New = func() interface{} { return &Tx{db: db, tmp: map[string]*entry{}} }
+	db.txPool.New = func() interface{} { return &Tx{db: db, tmp: map[string]entry{}} }
 	//db.load()
 
 	return db, nil
@@ -81,7 +74,7 @@ func (db *DB) writeTx(tx *Tx) error {
 	for k, v := range tx.tmp {
 		switch v.Type {
 		case entrySet:
-			db.s[k] = string(v.Value)
+			db.s[k] = v.Value
 		case entryDelete:
 			delete(db.s, k)
 		}
@@ -117,4 +110,10 @@ func (db *DB) Update(fn func(tx *Tx) error) error {
 
 func (db *DB) Close() error {
 	return db.f.Close()
+}
+
+func (db *DB) Set(k string, v []byte) error {
+	return db.Update(func(tx *Tx) error {
+		return tx.Set(k, v)
+	})
 }

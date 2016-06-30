@@ -9,7 +9,7 @@ func TestDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp.Close()
-	t.Log(fp.Name())
+	defer os.RemoveFile(fp.Name())
 	db, err := New(fp.Name())
 	if err != nil {
 		t.Fatal(err)
