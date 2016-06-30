@@ -2,7 +2,6 @@ package jdb
 
 import (
 	"io/ioutil"
-	"log"
 	"testing"
 )
 
@@ -12,13 +11,13 @@ func TestDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp.Close()
-	//defer os.RemoveFile(fp.Name())
-	log.Println(fp.Name())
-	db, err := New(fp.Name())
+	defer os.RemoveFile(fp.Name())
+	//log.Println(fp.Name())
+	db, err := New(fp.Name(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+
 	//defer os.RemoveFile(db.f.Name())
 	db.Update(func(tx *Tx) error {
 		return tx.Set("a", []byte("a"))
@@ -33,6 +32,7 @@ func TestDB(t *testing.T) {
 		t.Fatal("expected ErrReadOnly, got", err)
 	}
 	db.Update(func(tx *Tx) error {
+		tx.Set("b", []byte("b"))
 		return tx.Delete("a")
 	})
 
@@ -42,5 +42,22 @@ func TestDB(t *testing.T) {
 		}
 		return nil
 	})
+	db.Close()
 
+	if db, err = New(fp.Name(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	db.Read(func(tx *Tx) error {
+		if tx.Get("b") == nil {
+			t.Error("coudln't load b :(")
+		}
+		return nil
+	})
+
+	db.Update(func(tx *Tx) error {
+		tx.Set("c", []byte("c"))
+		return nil
+	})
+	db.Close()
 }

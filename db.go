@@ -2,6 +2,7 @@ package jdb
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -14,6 +15,38 @@ const (
 	entryDelete
 )
 
+type Encoder interface {
+	Encode(v interface{}) error
+}
+
+type Decoder interface {
+	Decode(v interface{}) error
+}
+
+type Opts struct {
+	GetEncoder func(w io.Writer) Encoder
+	GetDecoder func(r io.Reader) Decoder
+}
+
+var (
+	JSON = Opts{
+		GetEncoder: func(w io.Writer) Encoder { return json.NewEncoder(w) },
+		GetDecoder: func(r io.Reader) Decoder { return json.NewDecoder(r) },
+	}
+
+	Gob = Opts{
+		GetEncoder: func(w io.Writer) Encoder { return json.NewEncoder(w) },
+		GetDecoder: func(r io.Reader) Decoder { return json.NewDecoder(r) },
+	}
+
+	Binny = Opts{
+		GetEncoder: func(w io.Writer) Encoder { return json.NewEncoder(w) },
+		GetDecoder: func(r io.Reader) Decoder { return json.NewDecoder(r) },
+	}
+
+	DefaultOpts = JSON
+)
+
 type DB struct {
 	mux sync.RWMutex
 	f   *os.File
@@ -22,7 +55,8 @@ type DB struct {
 
 	txPool sync.Pool
 
-	encodeFn func(tx *fileTx) error
+	encodeFn func(interface{}) error
+	decodeFn func(interface{}) error
 
 	stats struct {
 		Rollbacks int64
@@ -30,21 +64,52 @@ type DB struct {
 	}
 }
 
-func New(fp string) (*DB, error) {
+func New(fp string, opts *Opts) (*DB, error) {
 	f, err := os.OpenFile(fp, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
-	enc := json.NewEncoder(f)
+	if opts == nil {
+		opts = &DefaultOpts
+	}
+
 	db := &DB{
 		f:        f,
-		encodeFn: func(tx *fileTx) error { return enc.Encode(tx) },
+		encodeFn: opts.GetEncoder(f).Encode,
+		decodeFn: opts.GetDecoder(f).Decode,
 		s:        map[string][]byte{},
 	}
-	db.txPool.New = func() interface{} { return &Tx{db: db, tmp: storage{}} }
-	//db.load()
 
-	return db, nil
+	db.txPool.New = func() interface{} { return &Tx{db: db, s: storage{}} }
+
+	if err = db.load(); err != nil {
+		return nil, err
+	}
+	_, err = db.f.Seek(0, os.SEEK_END)
+	return db, err
+}
+
+func (db *DB) load() error {
+	db.f.Seek(0, os.SEEK_SET)
+	for {
+		var tx fileTx
+		err := db.decodeFn(&tx)
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			return err
+		}
+		// no use for tx.TS for now
+		for k, v := range tx.Data {
+			switch v.Type {
+			case entrySet:
+				db.s[k] = v.Value
+			case entryDelete:
+				delete(db.s, k)
+			}
+		}
+	}
 }
 
 func (db *DB) getTx(rw bool) *Tx {
@@ -54,8 +119,8 @@ func (db *DB) getTx(rw bool) *Tx {
 }
 
 func (db *DB) putTx(tx *Tx) {
-	for k := range tx.tmp {
-		delete(tx.tmp, k)
+	for k := range tx.s {
+		delete(tx.s, k)
 	}
 	tx.rw = false
 	db.txPool.Put(tx)
@@ -68,12 +133,12 @@ func (db *DB) writeTx(tx *Tx) error {
 		return err
 	}
 
-	if err := db.encodeFn(&fileTx{time.Now().Unix(), tx.tmp}); err != nil {
+	if err := db.encodeFn(&fileTx{time.Now().Unix(), tx.s}); err != nil {
 		db.stats.Rollbacks++
 		db.f.Seek(curPos, os.SEEK_SET)
 		return err
 	}
-	for k, v := range tx.tmp {
+	for k, v := range tx.s {
 		switch v.Type {
 		case entrySet:
 			db.s[k] = v.Value

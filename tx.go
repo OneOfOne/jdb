@@ -23,13 +23,13 @@ type fileTx struct {
 }
 
 type Tx struct {
-	db  *DB
-	tmp storage
-	rw  bool
+	db *DB
+	s  storage
+	rw bool
 }
 
 func (tx *Tx) Get(k string) []byte {
-	if v, ok := tx.tmp[k]; ok {
+	if v, ok := tx.s[k]; ok {
 		return v.Value
 	}
 	return tx.db.s[k]
@@ -43,7 +43,7 @@ func (tx *Tx) Set(k string, v []byte) error {
 	if !tx.rw {
 		return ErrReadOnly
 	}
-	tx.tmp[k] = entry{v, entrySet}
+	tx.s[k] = entry{v, entrySet}
 	return nil
 }
 
@@ -59,6 +59,6 @@ func (tx *Tx) Delete(k string) error {
 	if !tx.rw {
 		return ErrReadOnly
 	}
-	tx.tmp[k] = entry{Type: entryDelete}
+	tx.s[k] = entry{Type: entryDelete}
 	return nil
 }
