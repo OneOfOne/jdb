@@ -1,6 +1,7 @@
 package jdb
 
 import (
+	"encoding/json"
 	"os"
 	"sync"
 	"time"
@@ -34,7 +35,7 @@ func New(fp string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	enc := binny.NewEncoder(f)
+	enc := json.NewEncoder(f)
 	db := &DB{
 		f:        f,
 		encodeFn: func(tx *fileTx) error { return enc.Encode(tx) },

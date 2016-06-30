@@ -1,7 +1,10 @@
 package jdb
 
-import "testing"
-import "io/ioutil"
+import (
+	"io/ioutil"
+	"log"
+	"testing"
+)
 
 func TestDB(t *testing.T) {
 	fp, err := ioutil.TempFile("", "jdb-")
@@ -9,7 +12,8 @@ func TestDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp.Close()
-	defer os.RemoveFile(fp.Name())
+	//defer os.RemoveFile(fp.Name())
+	log.Println(fp.Name())
 	db, err := New(fp.Name())
 	if err != nil {
 		t.Fatal(err)
