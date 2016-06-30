@@ -1,0 +1,120 @@
+package jdb
+
+import (
+	"encoding/json"
+	"io"
+	"os"
+	"sync"
+	"time"
+)
+
+const (
+	entrySet = iota
+	entryDelete
+)
+
+type ReadWriteFlushCloser interface {
+	io.Reader
+	io.Writer
+	io.Closer
+}
+
+type DB struct {
+	mux sync.RWMutex
+	f   *os.File
+
+	s map[string]string
+
+	txPool sync.Pool
+
+	encodeFn func(tx *fileTx) error
+
+	stats struct {
+		Rollbacks int64
+		Commits   int64
+	}
+}
+
+func New(fp string) (*DB, error) {
+	f, err := os.OpenFile(fp, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	enc := json.NewEncoder(f)
+	db := &DB{
+		f:        f,
+		encodeFn: func(tx *fileTx) error { return enc.Encode(tx) },
+		s:        map[string]string{},
+	}
+	db.txPool.New = func() interface{} { return &Tx{db: db, tmp: map[string]*entry{}} }
+	//db.load()
+
+	return db, nil
+}
+
+func (db *DB) getTx(rw bool) *Tx {
+	tx := db.txPool.Get().(*Tx)
+	tx.rw = rw
+	return tx
+}
+
+func (db *DB) putTx(tx *Tx) {
+	for k := range tx.tmp {
+		delete(tx.tmp, k)
+	}
+	tx.rw = false
+	db.txPool.Put(tx)
+}
+
+func (db *DB) writeTx(tx *Tx) error {
+	// TODO allow non-json
+	curPos, err := db.f.Seek(0, os.SEEK_CUR)
+	if err != nil {
+		return err
+	}
+
+	if err := db.encodeFn(&fileTx{time.Now().Unix(), tx.tmp}); err != nil {
+		db.stats.Rollbacks++
+		db.f.Seek(curPos, os.SEEK_SET)
+		return err
+	}
+	for k, v := range tx.tmp {
+		switch v.Type {
+		case entrySet:
+			db.s[k] = string(v.Value)
+		case entryDelete:
+			delete(db.s, k)
+		}
+	}
+	db.stats.Commits++
+
+	return db.f.Sync()
+}
+
+func (db *DB) Read(fn func(tx *Tx) error) error {
+	tx := db.getTx(false)
+	db.mux.RLock()
+	defer func() {
+		db.mux.RUnlock()
+		db.putTx(tx)
+	}()
+	return fn(tx)
+}
+
+func (db *DB) Update(fn func(tx *Tx) error) error {
+	tx := db.getTx(true)
+	db.mux.Lock()
+	defer func() {
+		db.mux.Unlock()
+		db.putTx(tx)
+	}()
+	if err := fn(tx); err != nil {
+		db.stats.Rollbacks++
+		return err
+	}
+	return db.writeTx(tx)
+}
+
+func (db *DB) Close() error {
+	return db.f.Close()
+}
