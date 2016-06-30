@@ -1,6 +1,7 @@
 package jdb
 
 import (
+	"encoding/gob"
 	"encoding/json"
 	"io"
 	"os"
@@ -35,13 +36,13 @@ var (
 	}
 
 	Gob = Opts{
-		GetEncoder: func(w io.Writer) Encoder { return json.NewEncoder(w) },
-		GetDecoder: func(r io.Reader) Decoder { return json.NewDecoder(r) },
+		GetEncoder: func(w io.Writer) Encoder { return gob.NewEncoder(w) },
+		GetDecoder: func(r io.Reader) Decoder { return gob.NewDecoder(r) },
 	}
 
 	Binny = Opts{
-		GetEncoder: func(w io.Writer) Encoder { return json.NewEncoder(w) },
-		GetDecoder: func(r io.Reader) Decoder { return json.NewDecoder(r) },
+		GetEncoder: func(w io.Writer) Encoder { return binny.NewEncoder(w) },
+		GetDecoder: func(r io.Reader) Decoder { return binny.NewDecoder(r) },
 	}
 
 	DefaultOpts = JSON
