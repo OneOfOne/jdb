@@ -1,10 +1,8 @@
 package jdb
 
-import (
-	"errors"
+import "errors"
 
-	"github.com/missionMeteora/binny.v2"
-)
+const RootBucket = ""
 
 var (
 	ErrReadOnly = errors.New("readonly tx")
@@ -25,13 +23,42 @@ type entry struct {
 	Type  uint8 `json:"type,omitempty"`
 }
 
-type storage map[string]entry
+type txBucket map[string]entry
+
+type storage map[string]txBucket
+
+func (s storage) apply(db *DB) {
+	for bn, b := range s {
+		if b == nil {
+			delete(db.s, bn)
+			continue
+		}
+		m := db.s[bn]
+		if m == nil {
+			m = Bucket{}
+			db.s[bn] = m
+		}
+		for k, v := range b {
+			switch v.Type {
+			case entrySet:
+				if db.opts.CopyOnSet {
+					m[k] = Value(v.Value.Copy())
+				} else {
+					m[k] = v.Value
+				}
+			case entryDelete:
+				delete(m, k)
+			}
+		}
+	}
+
+}
 
 type fileTx struct {
-	Index       uint64           `json:"idx,omitempty"`
-	TS          int64            `json:"ts,omitempty"`
-	CompactData map[string]Value `json:"compactData,omitempty"`
-	Data        storage          `json:"data,omitempty"`
+	Index       uint64            `json:"idx,omitempty"`
+	TS          int64             `json:"ts,omitempty"`
+	CompactData map[string]Bucket `json:"compactData,omitempty"`
+	Data        storage           `json:"data,omitempty"`
 }
 
 type Tx struct {
@@ -40,12 +67,12 @@ type Tx struct {
 	rw bool
 }
 
-func (tx *Tx) Get(k string) Value {
+func (tx *Tx) BucketGet(bucket, key string) Value {
 	var out Value
-	if v, ok := tx.s[k]; ok {
-		out = v.Value
+	if b, ok := tx.s[bucket]; ok {
+		out = b[key].Value
 	} else {
-		out = tx.db.s[k]
+		out = tx.db.s[bucket][key]
 	}
 	if tx.db.opts.CopyOnGet {
 		return out.Copy()
@@ -53,36 +80,73 @@ func (tx *Tx) Get(k string) Value {
 	return out
 }
 
-func (tx *Tx) GetObject(k string, v interface{}) error {
-	var out Value
-	if v, ok := tx.s[k]; ok {
-		out = v.Value
-	} else {
-		out = tx.db.s[k]
-	}
-	return binny.Unmarshal(out, v)
+func (tx *Tx) Get(key string) Value {
+	return tx.BucketGet("", key)
 }
 
-func (tx *Tx) Set(k string, v []byte) error {
+func (tx *Tx) BucketGetObject(bucket, key string, out interface{}) error {
+	var v Value
+	if b, ok := tx.s[bucket]; ok {
+		v = b[key].Value
+	} else {
+		v = tx.db.s[bucket][key]
+	}
+	return tx.db.opts.Unmarshaler(v, out)
+}
+
+func (tx *Tx) GetObject(key string, out interface{}) error {
+	return tx.BucketGetObject(RootBucket, key, out)
+}
+
+func (tx *Tx) BucketSet(bucket, key string, value []byte) error {
 	if !tx.rw {
 		return ErrReadOnly
 	}
-	tx.s[k] = entry{Value(v), entrySet}
+	b := tx.s[bucket]
+	if b == nil {
+		b = txBucket{}
+		tx.s[bucket] = b
+	}
+
+	b[key] = entry{value, entrySet}
 	return nil
 }
 
-func (tx *Tx) SetObject(k string, v interface{}) error {
-	bv, err := binny.Marshal(v)
+func (tx *Tx) Set(key string, value []byte) error {
+	return tx.BucketSet(RootBucket, key, value)
+}
+
+func (tx *Tx) BucketSetObject(bucket, key string, value interface{}) error {
+	bv, err := tx.db.opts.Marshaler(value)
 	if err != nil {
 		return err
 	}
-	return tx.Set(k, bv)
+	return tx.BucketSet(bucket, key, bv)
 }
 
-func (tx *Tx) Delete(k string) error {
+func (tx *Tx) SetObject(key string, value interface{}) error {
+	return tx.BucketSetObject(RootBucket, key, value)
+}
+
+func (tx *Tx) BucketDelete(bucket, key string) error {
 	if !tx.rw {
 		return ErrReadOnly
 	}
-	tx.s[k] = entry{Type: entryDelete}
+	b := tx.s[bucket]
+	if b == nil {
+		b = txBucket{}
+		tx.s[bucket] = b
+	}
+	b[key] = entry{Type: entryDelete}
+	return nil
+}
+
+func (tx *Tx) Delete(key string) error { return tx.BucketDelete(RootBucket, key) }
+
+func (tx *Tx) DeleteBucket(bucket string) error {
+	if !tx.rw {
+		return ErrReadOnly
+	}
+	tx.s[bucket] = nil
 	return nil
 }

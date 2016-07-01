@@ -1,10 +1,10 @@
 package jdb
 
 import (
-	"encoding/gob"
 	"encoding/json"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -27,8 +27,10 @@ type Decoder interface {
 }
 
 type Opts struct {
-	GetEncoder func(w io.Writer) Encoder
-	GetDecoder func(r io.Reader) Decoder
+	GetEncoder  func(w io.Writer) Encoder
+	GetDecoder  func(r io.Reader) Decoder
+	Marshaler   func(in interface{}) ([]byte, error)
+	Unmarshaler func(in []byte, out interface{}) error
 
 	CopyOnSet bool
 	CopyOnGet bool
@@ -36,28 +38,34 @@ type Opts struct {
 
 var (
 	JSON = Opts{
-		GetEncoder: func(w io.Writer) Encoder { return json.NewEncoder(w) },
-		GetDecoder: func(r io.Reader) Decoder { return json.NewDecoder(r) },
+		GetEncoder:  func(w io.Writer) Encoder { return json.NewEncoder(w) },
+		GetDecoder:  func(r io.Reader) Decoder { return json.NewDecoder(r) },
+		Marshaler:   json.Marshal,
+		Unmarshaler: json.Unmarshal,
 	}
 
-	Gob = Opts{
-		GetEncoder: func(w io.Writer) Encoder { return gob.NewEncoder(w) },
-		GetDecoder: func(r io.Reader) Decoder { return gob.NewDecoder(r) },
-	}
+	// Gob = Opts{
+	// 	GetEncoder:  func(w io.Writer) Encoder { return gob.NewEncoder(w) },
+	// 	GetDecoder:  func(r io.Reader) Decoder { return gob.NewDecoder(r) },
+	// }
 
 	Binny = Opts{
-		GetEncoder: func(w io.Writer) Encoder { return binny.NewEncoder(w) },
-		GetDecoder: func(r io.Reader) Decoder { return binny.NewDecoder(r) },
+		GetEncoder:  func(w io.Writer) Encoder { return binny.NewEncoder(w) },
+		GetDecoder:  func(r io.Reader) Decoder { return binny.NewDecoder(r) },
+		Marshaler:   binny.Marshal,
+		Unmarshaler: binny.Unmarshal,
 	}
 
 	defaultOpts = JSON
 )
 
+type Bucket map[string]Value
+
 type DB struct {
 	mux sync.RWMutex
 	f   *os.File
 
-	s map[string]Value
+	s map[string]Bucket
 
 	maxIndex uint64
 
@@ -87,10 +95,12 @@ func New(fp string, opts *Opts) (*DB, error) {
 	if opts.GetEncoder == nil || opts.GetDecoder == nil {
 		opts.GetEncoder = defaultOpts.GetEncoder
 		opts.GetDecoder = defaultOpts.GetDecoder
+		opts.Marshaler = defaultOpts.Marshaler
+		opts.Unmarshaler = defaultOpts.Unmarshaler
 	}
 
 	db := &DB{
-		s:    map[string]Value{},
+		s:    map[string]Bucket{},
 		opts: *opts,
 	}
 	db.init(f)
@@ -121,19 +131,8 @@ func (db *DB) load() error {
 			}
 			return err
 		}
-		// no use for tx.TS for now
-		for k, v := range tx.Data {
-			switch v.Type {
-			case entrySet:
-				if db.opts.CopyOnSet {
-					db.s[k] = Value(v.Value.Copy())
-				} else {
-					db.s[k] = v.Value
-				}
-			case entryDelete:
-				delete(db.s, k)
-			}
-		}
+
+		tx.Data.apply(db)
 		for k, v := range tx.CompactData {
 			db.s[k] = v
 		}
@@ -156,7 +155,6 @@ func (db *DB) putTx(tx *Tx) {
 }
 
 func (db *DB) writeTx(tx *Tx) error {
-	// TODO allow non-json
 	curPos, err := db.f.Seek(0, os.SEEK_CUR)
 	if err != nil {
 		return err
@@ -171,17 +169,17 @@ func (db *DB) writeTx(tx *Tx) error {
 		db.f.Truncate(curPos)
 		return err
 	}
-	for k, v := range tx.s {
-		switch v.Type {
-		case entrySet:
-			db.s[k] = v.Value
-		case entryDelete:
-			delete(db.s, k)
-		}
+
+	if err := db.f.Sync(); err != nil {
+		db.stats.Rollbacks++
+		db.f.Truncate(curPos)
+		return err
 	}
+
+	tx.s.apply(db)
 	db.stats.Commits++
 	db.maxIndex++
-	return db.f.Sync()
+	return nil
 }
 
 func (db *DB) Read(fn func(tx *Tx) error) error {
@@ -212,9 +210,9 @@ func (db *DB) Close() error {
 	return db.f.Close()
 }
 
-func (db *DB) Get(k string) Value {
+func (db *DB) BucketGet(bucket, key string) Value {
 	db.mux.RLock()
-	v := db.s[k]
+	v := db.s[bucket][key]
 	db.mux.RUnlock()
 	if db.opts.CopyOnGet {
 		return v.Copy()
@@ -222,53 +220,78 @@ func (db *DB) Get(k string) Value {
 	return v
 }
 
-func (db *DB) GetObject(k string, v interface{}) error {
+func (db *DB) Get(bucket, key string) Value {
+	return db.BucketGet(RootBucket, key)
+}
+
+func (db *DB) BucketGetObject(bucket, key string, out interface{}) error {
 	db.mux.RLock()
-	bv := db.s[k]
+	bv := db.s[bucket][key]
 	db.mux.RUnlock()
-	return binny.Unmarshal(bv, v)
+	return db.opts.Unmarshaler(bv, out)
 }
 
-func (db *DB) Set(k string, v []byte) error {
+func (db *DB) GetObject(key string, out interface{}) error {
+	return db.BucketGetObject(RootBucket, key, out)
+}
+
+func (db *DB) BucketSet(bucket, key string, value []byte) error {
 	return db.Update(func(tx *Tx) error {
-		return tx.Set(k, v)
+		return tx.BucketSet(bucket, key, value)
 	})
 }
 
-func (db *DB) SetObject(k string, v interface{}) error {
+func (db *DB) Set(key string, value []byte) error {
+	return db.BucketSet(RootBucket, key, value)
+}
+
+func (db *DB) BucketSetObject(bucket, key string, value interface{}) error {
 	return db.Update(func(tx *Tx) error {
-		return tx.SetObject(k, v)
+		return tx.BucketSetObject(bucket, key, value)
 	})
 }
 
-// TODO optimize
-func (db *DB) Compact(convertFn func(w io.Writer) Encoder) error {
+func (db *DB) SetObject(bucket, key string, value interface{}) error {
+	return db.BucketSetObject(RootBucket, key, value)
+}
+
+// Compact compacts the database, transactions will be lost, however the counter will still be valid.
+func (db *DB) Compact() error {
 	db.mux.Lock()
-	defer db.mux.Unlock()
+	f, err := ioutil.TempFile("", "jdb-compact")
 
-	f, err := ioutil.TempFile("", "compact.jdb")
-	if err != nil {
-		return err
-	}
 	defer func() {
+		db.mux.Unlock()
 		if err != nil {
 			f.Close()
 			os.Remove(f.Name())
 		}
 	}()
-	if convertFn == nil {
-		convertFn = db.opts.GetEncoder
+
+	if err != nil {
+		return err
 	}
 
-	if err = convertFn(f).Encode(&fileTx{
+	if err = db.opts.GetEncoder(f).Encode(&fileTx{
 		Index:       db.maxIndex,
 		TS:          time.Now().Unix(),
 		CompactData: db.s,
 	}); err != nil {
 		return err
 	}
-	db.f.Close()
-	err = os.Rename(f.Name(), db.f.Name())
+
+	if err = f.Sync(); err != nil {
+		return err
+	}
+
+	db.f.Close() // we don't really care at this point
+
+	if err := os.Rename(f.Name(), db.f.Name()); err != nil {
+		f.Close()
+		log.Panicf("error renaming files, non of the files were overwritten\ndb file: %s\ncompacted db file: %s",
+			db.f.Name(), f.Name())
+	}
+
 	db.init(f)
 	return err
 }
