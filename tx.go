@@ -2,7 +2,7 @@ package jdb
 
 import "errors"
 
-const RootBucket = ""
+const RootBucket = "☢"
 
 var (
 	ErrReadOnly = errors.New("readonly tx")
@@ -81,7 +81,7 @@ func (tx *Tx) BucketGet(bucket, key string) Value {
 }
 
 func (tx *Tx) Get(key string) Value {
-	return tx.BucketGet("", key)
+	return tx.BucketGet(RootBucket, key)
 }
 
 func (tx *Tx) BucketGetObject(bucket, key string, out interface{}) error {

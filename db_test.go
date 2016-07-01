@@ -46,7 +46,7 @@ func TestDB(t *testing.T) {
 		return nil
 	})
 
-	if err := db.Compact(nil); err != nil {
+	if err := db.Compact(); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
