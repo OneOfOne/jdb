@@ -6,6 +6,7 @@ const RootBucket = "☢"
 
 var (
 	ErrReadOnly = errors.New("readonly tx")
+	ErrNilValue = errors.New("value can't be nil")
 )
 
 type Value []byte
@@ -18,135 +19,133 @@ func (v Value) Copy() []byte {
 	return cp
 }
 
-type entry struct {
-	Value Value `json:"value,omitempty"`
-	Type  uint8 `json:"type,omitempty"`
-}
-
-type txBucket map[string]entry
-
-type storage map[string]txBucket
-
-func (s storage) apply(db *DB) {
-	for bn, b := range s {
-		if b == nil {
-			delete(db.s, bn)
-			continue
-		}
-		m := db.s[bn]
-		if m == nil {
-			m = Bucket{}
-			db.s[bn] = m
-		}
-		for k, v := range b {
-			switch v.Type {
-			case entrySet:
-				if db.opts.CopyOnSet {
-					m[k] = Value(v.Value.Copy())
-				} else {
-					m[k] = v.Value
-				}
-			case entryDelete:
-				delete(m, k)
-			}
-		}
-	}
-
-}
-
 type fileTx struct {
-	Index       uint64            `json:"idx,omitempty"`
-	TS          int64             `json:"ts,omitempty"`
-	CompactData map[string]Bucket `json:"compactData,omitempty"`
-	Data        storage           `json:"data,omitempty"`
+	Index     uint64  `json:"idx,omitempty"`
+	TS        int64   `json:"ts,omitempty"`
+	Changeset *bucket `json:"cs,omitempty"`
+	Compact   bool    `json:"compact,omitempty"`
 }
 
 type Tx struct {
-	db *DB
-	s  storage
-	rw bool
+	BucketTx
 }
 
-func (tx *Tx) BucketGet(bucket, key string) Value {
-	var out Value
-	if b, ok := tx.s[bucket]; ok {
-		out = b[key].Value
-	} else {
-		out = tx.db.s[bucket][key]
+type bucket struct {
+	Buckets map[string]*bucket `json:"buckets,omitempty"`
+	Data    map[string]Value   `json:"data,omitempty"`
+}
+
+func (b *bucket) Get(key string) Value {
+	if b == nil {
+		return nil
 	}
-	if tx.db.opts.CopyOnGet {
-		return out.Copy()
+	return b.Data[key]
+}
+
+func (b *bucket) Set(key string, val Value) {
+	if b.Data == nil {
+		b.Data = map[string]Value{}
 	}
-	return out
+	b.Data[key] = val
 }
 
-func (tx *Tx) Get(key string) Value {
-	return tx.BucketGet(RootBucket, key)
+func (b *bucket) Delete(key string) {
+	delete(b.Data, key)
 }
 
-func (tx *Tx) BucketGetObject(bucket, key string, out interface{}) error {
-	var v Value
-	if b, ok := tx.s[bucket]; ok {
-		v = b[key].Value
-	} else {
-		v = tx.db.s[bucket][key]
+func (b *bucket) Bucket(name string) *bucket {
+	if b.Buckets == nil {
+		b.Buckets = map[string]*bucket{}
 	}
-	return tx.db.opts.Unmarshaler(v, out)
+
+	nb := b.Buckets[name]
+	if nb == nil {
+		nb = &bucket{}
+		b.Buckets[name] = nb
+	}
+	return nb
 }
 
-func (tx *Tx) GetObject(key string, out interface{}) error {
-	return tx.BucketGetObject(RootBucket, key, out)
+func (b *bucket) DeleteBucket(name string) {
+	delete(b.Buckets, name)
 }
 
-func (tx *Tx) BucketSet(bucket, key string, value []byte) error {
-	if !tx.rw {
+type BucketTx struct {
+	tmpBucket  *bucket
+	realBucket *bucket
+	rw         bool
+}
+
+func (b *BucketTx) Get(key string) Value {
+	if v := b.tmpBucket.Get(key); v != nil {
+		return v
+	}
+	return b.realBucket.Get(key)
+}
+
+func (b *BucketTx) Set(key string, val Value) error {
+	if !b.rw {
 		return ErrReadOnly
 	}
-	b := tx.s[bucket]
-	if b == nil {
-		b = txBucket{}
-		tx.s[bucket] = b
+	if val == nil {
+		return ErrNilValue
 	}
-
-	b[key] = entry{value, entrySet}
+	b.tmpBucket.Set(key, val)
 	return nil
 }
 
-func (tx *Tx) Set(key string, value []byte) error {
-	return tx.BucketSet(RootBucket, key, value)
-}
-
-func (tx *Tx) BucketSetObject(bucket, key string, value interface{}) error {
-	bv, err := tx.db.opts.Marshaler(value)
-	if err != nil {
-		return err
-	}
-	return tx.BucketSet(bucket, key, bv)
-}
-
-func (tx *Tx) SetObject(key string, value interface{}) error {
-	return tx.BucketSetObject(RootBucket, key, value)
-}
-
-func (tx *Tx) BucketDelete(bucket, key string) error {
-	if !tx.rw {
+func (b *BucketTx) Delete(key string) error {
+	if !b.rw {
 		return ErrReadOnly
 	}
-	b := tx.s[bucket]
-	if b == nil {
-		b = txBucket{}
-		tx.s[bucket] = b
-	}
-	b[key] = entry{Type: entryDelete}
+	b.tmpBucket.Set(key, nil)
 	return nil
 }
 
-func (tx *Tx) Delete(key string) error { return tx.BucketDelete(RootBucket, key) }
+func (b *BucketTx) ForEach(fn func(key string, val Value) error) error {
+	for k, v := range b.tmpBucket.Data {
+		if v == nil {
+			continue
+		}
 
-func (tx *Tx) DeleteBucket(bucket string) error {
-	if !tx.rw {
+		if err := fn(k, v); err != nil {
+			return err
+		}
+	}
+	if b.realBucket == nil {
+		return nil
+	}
+	for k, v := range b.realBucket.Data {
+		if _, ok := b.tmpBucket.Data[k]; ok {
+			continue
+		}
+		if err := fn(k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *BucketTx) Bucket(name string) *BucketTx {
+	var rb *bucket
+	if b.realBucket != nil {
+		rb = b.realBucket.Buckets[name]
+	}
+	return &BucketTx{
+		tmpBucket:  b.tmpBucket.Bucket(name),
+		realBucket: rb,
+		rw:         b.rw,
+	}
+}
+
+func (b *BucketTx) DeleteBucket(name string) error {
+	if !b.rw {
 		return ErrReadOnly
 	}
-	tx.s[bucket] = nil
+
+	if b.tmpBucket.Buckets == nil {
+		b.tmpBucket.Buckets = map[string]*bucket{}
+	}
+	b.tmpBucket.Buckets[name] = nil
 	return nil
 }

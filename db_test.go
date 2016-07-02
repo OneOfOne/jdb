@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+func init() {
+	log.SetFlags(log.Lshortfile)
+}
 func TestDB(t *testing.T) {
 	fp, err := ioutil.TempFile("", "jdb-")
 	if err != nil {
@@ -34,10 +37,10 @@ func TestDB(t *testing.T) {
 		t.Fatal("expected ErrReadOnly, got", err)
 	}
 
-	db.Update(func(tx *Tx) error {
+	log.Println(db.Update(func(tx *Tx) error {
 		tx.Set("b", []byte("b"))
 		return tx.Delete("a")
-	})
+	}))
 
 	db.Read(func(tx *Tx) error {
 		if tx.Get("a") != nil {
@@ -55,15 +58,21 @@ func TestDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	db.Update(func(tx *Tx) error {
+		tx.Bucket("parent").Bucket("child").Set("the punisher", Value("coolest hero"))
+		return tx.Set("c", []byte("c"))
+	})
+
 	db.Read(func(tx *Tx) error {
 		if tx.Get("b") == nil {
 			t.Error("coudln't load b :(")
 		}
+		b := tx.Bucket("parent").Bucket("child")
+		if b.Get("the punisher") == nil {
+			t.Error("NOOOOOOO")
+		}
 		return nil
 	})
 
-	db.Update(func(tx *Tx) error {
-		return tx.Set("c", []byte("c"))
-	})
 	db.Close()
 }

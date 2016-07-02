@@ -59,13 +59,13 @@ var (
 	defaultOpts = JSON
 )
 
-type Bucket map[string]Value
+//type Bucket map[string]Value
 
 type DB struct {
 	mux sync.RWMutex
 	f   *os.File
 
-	s map[string]Bucket
+	root bucket
 
 	maxIndex uint64
 
@@ -100,11 +100,10 @@ func New(fp string, opts *Opts) (*DB, error) {
 	}
 
 	db := &DB{
-		s:    map[string]Bucket{},
 		opts: *opts,
 	}
 	db.init(f)
-	db.txPool.New = func() interface{} { return &Tx{db: db, s: storage{}} }
+	db.txPool.New = func() interface{} { return db.createTx() }
 
 	if err = db.load(); err != nil {
 		return nil, err
@@ -132,11 +131,17 @@ func (db *DB) load() error {
 			return err
 		}
 
-		tx.Data.apply(db)
-		for k, v := range tx.CompactData {
-			db.s[k] = v
-		}
+		db.applyTx(tx.Changeset, &db.root)
 		db.maxIndex = tx.Index
+	}
+}
+
+func (db *DB) createTx() *Tx {
+	return &Tx{
+		BucketTx: BucketTx{
+			tmpBucket:  &bucket{},
+			realBucket: &db.root,
+		},
 	}
 }
 
@@ -147,11 +152,33 @@ func (db *DB) getTx(rw bool) *Tx {
 }
 
 func (db *DB) putTx(tx *Tx) {
-	for k := range tx.s {
-		delete(tx.s, k)
+	if tb := tx.tmpBucket; tb != nil {
+		for k := range tb.Buckets {
+			delete(tb.Buckets, k)
+		}
+		for k := range tb.Data {
+			delete(tb.Data, k)
+		}
 	}
-	tx.rw = false
 	db.txPool.Put(tx)
+}
+
+func (db *DB) applyTx(tmpB, realB *bucket) {
+	for k, v := range tmpB.Data {
+		if v == nil {
+			realB.Delete(k)
+		} else {
+			realB.Set(k, v)
+		}
+	}
+
+	for bn, b := range tmpB.Buckets {
+		if b == nil {
+			realB.DeleteBucket(bn)
+		} else {
+			db.applyTx(b, realB.Bucket(bn))
+		}
+	}
 }
 
 func (db *DB) writeTx(tx *Tx) error {
@@ -161,9 +188,9 @@ func (db *DB) writeTx(tx *Tx) error {
 	}
 
 	if err := db.encodeFn(&fileTx{
-		Index: db.maxIndex,
-		TS:    time.Now().Unix(),
-		Data:  tx.s,
+		Index:     db.maxIndex,
+		TS:        time.Now().Unix(),
+		Changeset: tx.tmpBucket,
 	}); err != nil {
 		db.stats.Rollbacks++
 		db.f.Truncate(curPos)
@@ -176,7 +203,7 @@ func (db *DB) writeTx(tx *Tx) error {
 		return err
 	}
 
-	tx.s.apply(db)
+	db.applyTx(tx.tmpBucket, &db.root)
 	db.stats.Commits++
 	db.maxIndex++
 	return nil
@@ -210,50 +237,50 @@ func (db *DB) Close() error {
 	return db.f.Close()
 }
 
-func (db *DB) BucketGet(bucket, key string) Value {
-	db.mux.RLock()
-	v := db.s[bucket][key]
-	db.mux.RUnlock()
-	if db.opts.CopyOnGet {
-		return v.Copy()
-	}
-	return v
-}
+// func (db *DB) BucketGet(bucket, key string) Value {
+// 	db.mux.RLock()
+// 	v := db.s[bucket][key]
+// 	db.mux.RUnlock()
+// 	if db.opts.CopyOnGet {
+// 		return v.Copy()
+// 	}
+// 	return v
+// }
 
-func (db *DB) Get(bucket, key string) Value {
-	return db.BucketGet(RootBucket, key)
-}
+// func (db *DB) Get(bucket, key string) Value {
+// 	return db.BucketGet(RootBucket, key)
+// }
 
-func (db *DB) BucketGetObject(bucket, key string, out interface{}) error {
-	db.mux.RLock()
-	bv := db.s[bucket][key]
-	db.mux.RUnlock()
-	return db.opts.Unmarshaler(bv, out)
-}
+// func (db *DB) BucketGetObject(bucket, key string, out interface{}) error {
+// 	db.mux.RLock()
+// 	bv := db.s[bucket][key]
+// 	db.mux.RUnlock()
+// 	return db.opts.Unmarshaler(bv, out)
+// }
 
-func (db *DB) GetObject(key string, out interface{}) error {
-	return db.BucketGetObject(RootBucket, key, out)
-}
+// func (db *DB) GetObject(key string, out interface{}) error {
+// 	return db.BucketGetObject(RootBucket, key, out)
+// }
 
-func (db *DB) BucketSet(bucket, key string, value []byte) error {
-	return db.Update(func(tx *Tx) error {
-		return tx.BucketSet(bucket, key, value)
-	})
-}
+// func (db *DB) BucketSet(bucket, key string, value []byte) error {
+// 	return db.Update(func(tx *Tx) error {
+// 		return tx.BucketSet(bucket, key, value)
+// 	})
+// }
 
-func (db *DB) Set(key string, value []byte) error {
-	return db.BucketSet(RootBucket, key, value)
-}
+// func (db *DB) Set(key string, value []byte) error {
+// 	return db.BucketSet(RootBucket, key, value)
+// }
 
-func (db *DB) BucketSetObject(bucket, key string, value interface{}) error {
-	return db.Update(func(tx *Tx) error {
-		return tx.BucketSetObject(bucket, key, value)
-	})
-}
+// func (db *DB) BucketSetObject(bucket, key string, value interface{}) error {
+// 	return db.Update(func(tx *Tx) error {
+// 		return tx.BucketSetObject(bucket, key, value)
+// 	})
+// }
 
-func (db *DB) SetObject(bucket, key string, value interface{}) error {
-	return db.BucketSetObject(RootBucket, key, value)
-}
+// func (db *DB) SetObject(bucket, key string, value interface{}) error {
+// 	return db.BucketSetObject(RootBucket, key, value)
+// }
 
 // Compact compacts the database, transactions will be lost, however the counter will still be valid.
 func (db *DB) Compact() error {
@@ -273,9 +300,10 @@ func (db *DB) Compact() error {
 	}
 
 	if err = db.opts.GetEncoder(f).Encode(&fileTx{
-		Index:       db.maxIndex,
-		TS:          time.Now().Unix(),
-		CompactData: db.s,
+		Index:     db.maxIndex,
+		TS:        time.Now().Unix(),
+		Changeset: &db.root,
+		Compact:   true,
 	}); err != nil {
 		return err
 	}
