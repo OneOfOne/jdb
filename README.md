@@ -1,6 +1,6 @@
 # jdb ![Status](https://img.shields.io/badge/status-beta-red.svg)
 
-### A file-backed transactional in-memory datastore trying to be ACID compliant.
+### A file-backed ACID in-memory k/v data store.
 
 ## FAQ
 
@@ -33,11 +33,13 @@ defer db.Close()
 
 err := db.Update(func(tx *Tx) error {
 	return tx.Set("a", []byte("a")) // or
-	return tx.Set("a", jdb.Value("a"))
+	// return tx.Set("a", jdb.Value("a"))
 })
 
-// shorthand for the above if you only need to set 1 value.
-err := db.Set("a", []byte("a"))
+// shorthand for a single
+err := db.SetObject("map in a sub-bucket", map[string]bool{
+	"isCool": true,
+}, "parent bucket", "a bucket under the parent bucket")
 ```
 
 ## TODO
