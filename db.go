@@ -55,10 +55,11 @@ func New(fp string, opts *Opts) (*DB, error) {
 
 	db := &DB{
 		opts: *opts,
+		f:    f,
 		be:   opts.Backend(),
 	}
 
-	if err = db.init(f); err != nil {
+	if err = db.be.Init(f, f); err != nil {
 		return nil, err
 	}
 
@@ -70,11 +71,6 @@ func New(fp string, opts *Opts) (*DB, error) {
 	db.maxIndex++
 	_, err = db.f.Seek(0, os.SEEK_END)
 	return db, err
-}
-
-func (db *DB) init(f *os.File) error {
-	db.f = f
-	return db.be.Init(f, f)
 }
 
 func (db *DB) load() error {
@@ -260,12 +256,18 @@ func (db *DB) isClosed() bool {
 
 func (db *DB) Close() error {
 	db.mux.Lock()
-	if c, ok := db.be.(io.Closer); ok {
-		c.Close()
-	}
-	err := db.f.Close()
+	err := db.close()
 	db.mux.Unlock()
 	return err
+}
+
+func (db *DB) close() error {
+	if c, ok := db.be.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			return err
+		}
+	}
+	return db.f.Close()
 }
 
 // Compact compacts the database, transactions will be lost, however the counter will still be valid.
@@ -308,18 +310,15 @@ func (db *DB) Compact() error {
 		return err
 	}
 
-	if c, ok := db.be.(io.Closer); ok {
-		c.Close()
-	}
-	db.f.Close() // we don't really care at this point
+	db.close()
 
 	if err := os.Rename(f.Name(), db.f.Name()); err != nil {
 		f.Close()
 		return &CompactError{f.Name(), db.f.Name(), err}
 	}
 
-	db.be = cp
-	return err
+	db.f, db.be = f, cp
+	return nil
 }
 
 type CompactError struct {

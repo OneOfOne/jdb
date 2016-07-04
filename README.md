@@ -1,6 +1,6 @@
 # jdb [![MIT licensed](https://img.shields.io/badge/license-apache-blue.svg)](https://raw.githubusercontent.com/OneOfOne/jdb/master/LICENSE) ![Status](https://img.shields.io/badge/status-beta-red.svg)
 
-## **A file-backed ACID in-memory k/v data store.**
+**A file-backed ACID in-memory k/v data store.**
 
 ## FAQ
 
