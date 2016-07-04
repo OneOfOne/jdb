@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -270,7 +271,7 @@ func (db *DB) Close() error {
 // Compact compacts the database, transactions will be lost, however the counter will still be valid.
 func (db *DB) Compact() error {
 	db.mux.Lock()
-	f, err := ioutil.TempFile("", "jdb-compact")
+	f, err := ioutil.TempFile(filepath.Dir(db.f.Name()), "jdb-compact")
 
 	defer func() {
 		db.mux.Unlock()
@@ -307,6 +308,9 @@ func (db *DB) Compact() error {
 		return err
 	}
 
+	if c, ok := db.be.(io.Closer); ok {
+		c.Close()
+	}
 	db.f.Close() // we don't really care at this point
 
 	if err := os.Rename(f.Name(), db.f.Name()); err != nil {

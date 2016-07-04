@@ -12,13 +12,28 @@ it is very easy to add your own.
 3. You can use the values directly in your code without having to copy them*
 4. You can fully replay the database and discard transactions as needed (not implemented yet).
 
-* <small>modifying values without a copy can result in a race, but the on-disk data won't be corrupted.</small>
-* <small>compacting the database will remove older transactions.</small>
+* *modifying values without a copy can result in a race, but the on-disk data won't be corrupted.*
+* *compacting the database will remove older transactions.*
 
 ### Why shouldn't I use this?
 
 Mainly if your dataset doesn't fit in memory then you're better off with
 an mmap'ed k/v store like the excellent [boltdb](https://github.com/boltdb/bolt).
+
+## Benchmarks
+
+```
+➤ go test -v -bench=. -benchmem -benchtime=5s
+=== RUN   TestDB
+--- PASS: TestDB (0.00s)
+BenchmarkJDBSameTxReadWrite-8            3000000              2808 ns/op             312 B/op         10 allocs/op
+BenchmarkBoltSameTxReadWrite-8           1000000              8171 ns/op            6309 B/op         44 allocs/op
+
+BenchmarkJDBSeparateReadWrite-8          3000000              2935 ns/op             312 B/op         10 allocs/op
+BenchmarkBoltSeparateReadWrite-8         1000000             12122 ns/op            9495 B/op         53 allocs/op
+PASS
+ok      github.com/OneOfOne/jdb 48.915s
+```
 
 ## Examples
 
