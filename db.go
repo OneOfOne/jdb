@@ -1,62 +1,22 @@
 package jdb
 
 import (
-	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"sync"
 	"time"
-
-	"github.com/missionMeteora/binny.v2"
 )
-
-const (
-	entrySet = iota
-	entryDelete
-	entryCompact
-)
-
-type Encoder interface {
-	Encode(v interface{}) error
-}
-
-type Decoder interface {
-	Decode(v interface{}) error
-}
-
-type Opts struct {
-	GetEncoder  func(w io.Writer) Encoder
-	GetDecoder  func(r io.Reader) Decoder
-	Marshaler   func(in interface{}) ([]byte, error)
-	Unmarshaler func(in []byte, out interface{}) error
-
-	CopyOnSet bool
-	CopyOnGet bool
-}
 
 var (
-	JSON = Opts{
-		GetEncoder:  func(w io.Writer) Encoder { return json.NewEncoder(w) },
-		GetDecoder:  func(r io.Reader) Decoder { return json.NewDecoder(r) },
-		Marshaler:   json.Marshal,
-		Unmarshaler: json.Unmarshal,
-	}
-
-	// Gob = Opts{
-	// 	GetEncoder:  func(w io.Writer) Encoder { return gob.NewEncoder(w) },
-	// 	GetDecoder:  func(r io.Reader) Decoder { return gob.NewDecoder(r) },
-	// }
-
-	Binny = Opts{
-		GetEncoder:  func(w io.Writer) Encoder { return binny.NewEncoder(w) },
-		GetDecoder:  func(r io.Reader) Decoder { return binny.NewDecoder(r) },
-		Marshaler:   binny.Marshal,
-		Unmarshaler: binny.Unmarshal,
-	}
-
-	defaultOpts = JSON
+	ErrReadOnly           = errors.New("readonly")
+	ErrNotImpl            = errors.New("not implemented")
+	ErrNilValue           = errors.New("value can't be nil")
+	ErrClosed             = errors.New("db is closed, you may access read-only operations")
+	ErrMissingMarshaler   = errors.New("missing marshaler")
+	ErrMissingUnmarshaler = errors.New("missing unmarshaler")
 )
 
 //type Bucket map[string]Value
@@ -71,11 +31,8 @@ type DB struct {
 
 	txPool sync.Pool
 
-	encodeFn func(interface{}) error
-	decodeFn func(interface{}) error
-
-	opts Opts
-
+	opts  Opts
+	be    Backend
 	stats struct {
 		Rollbacks int64
 		Commits   int64
@@ -83,26 +40,27 @@ type DB struct {
 }
 
 func New(fp string, opts *Opts) (*DB, error) {
-	f, err := os.OpenFile(fp, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0600)
+	f, err := os.OpenFile(fp, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
 
 	if opts == nil {
-		opts = &defaultOpts
+		opts = &Opts{}
 	}
-
-	if opts.GetEncoder == nil || opts.GetDecoder == nil {
-		opts.GetEncoder = defaultOpts.GetEncoder
-		opts.GetDecoder = defaultOpts.GetDecoder
-		opts.Marshaler = defaultOpts.Marshaler
-		opts.Unmarshaler = defaultOpts.Unmarshaler
+	if opts.Backend == nil {
+		opts.Backend = JSONBackend
 	}
 
 	db := &DB{
 		opts: *opts,
+		be:   opts.Backend(),
 	}
-	db.init(f)
+
+	if err = db.init(f); err != nil {
+		return nil, err
+	}
+
 	db.txPool.New = func() interface{} { return db.createTx() }
 
 	if err = db.load(); err != nil {
@@ -113,17 +71,25 @@ func New(fp string, opts *Opts) (*DB, error) {
 	return db, err
 }
 
-func (db *DB) init(f *os.File) {
+func (db *DB) init(f *os.File) error {
 	db.f = f
-	db.encodeFn = db.opts.GetEncoder(f).Encode
-	db.decodeFn = db.opts.GetDecoder(f).Decode
+	return db.be.Init(f, f)
 }
 
 func (db *DB) load() error {
+	st, err := db.f.Stat()
+	if err != nil {
+		return err
+	}
+
+	if st.Size() == 0 {
+		return nil
+	}
+
 	db.f.Seek(0, os.SEEK_SET)
 	for {
 		var tx fileTx
-		err := db.decodeFn(&tx)
+		err := db.be.Decode(&tx)
 		if err != nil {
 			if err == io.EOF {
 				err = nil
@@ -163,20 +129,23 @@ func (db *DB) putTx(tx *Tx) {
 	db.txPool.Put(tx)
 }
 
-func (db *DB) applyTx(tmpB, realB *bucket) {
-	for k, v := range tmpB.Data {
+func (db *DB) applyTx(src, dst *bucket) {
+	for k, v := range src.Data {
 		if v == nil {
-			realB.Delete(k)
+			dst.Delete(k)
 		} else {
-			realB.Set(k, v)
+			if db.opts.CopyOnSet {
+				v = v.Copy()
+			}
+			dst.Set(k, v)
 		}
 	}
 
-	for bn, b := range tmpB.Buckets {
+	for bn, b := range src.Buckets {
 		if b == nil {
-			realB.DeleteBucket(bn)
+			dst.DeleteBucket(bn)
 		} else {
-			db.applyTx(b, realB.Bucket(bn))
+			db.applyTx(b, dst.Bucket(bn))
 		}
 	}
 }
@@ -187,11 +156,17 @@ func (db *DB) writeTx(tx *Tx) error {
 		return err
 	}
 
-	if err := db.encodeFn(&fileTx{
+	if err := db.be.Encode(&fileTx{
 		Index:     db.maxIndex,
 		TS:        time.Now().Unix(),
 		Changeset: tx.tmpBucket,
 	}); err != nil {
+		db.stats.Rollbacks++
+		db.f.Truncate(curPos)
+		return err
+	}
+
+	if err := db.be.Flush(); err != nil {
 		db.stats.Rollbacks++
 		db.f.Truncate(curPos)
 		return err
@@ -226,6 +201,9 @@ func (db *DB) Update(fn func(tx *Tx) error) error {
 		db.mux.Unlock()
 		db.putTx(tx)
 	}()
+	if db.isClosed() {
+		return ErrClosed
+	}
 	if err := fn(tx); err != nil {
 		db.stats.Rollbacks++
 		return err
@@ -233,54 +211,46 @@ func (db *DB) Update(fn func(tx *Tx) error) error {
 	return db.writeTx(tx)
 }
 
-func (db *DB) Close() error {
-	return db.f.Close()
+// Get is a shorthand access a value in an optional bucket chain.
+//	Example: v := db.Get("name", "users", "user-id-1")
+func (db *DB) Get(key string, bucket ...string) Value {
+	db.mux.RLock()
+	defer db.mux.RUnlock()
+	b := &db.root
+	for _, bn := range bucket {
+		if b = b.Buckets[bn]; b == nil {
+			return nil
+		}
+	}
+	return b.Get(key)
 }
 
-// func (db *DB) BucketGet(bucket, key string) Value {
-// 	db.mux.RLock()
-// 	v := db.s[bucket][key]
-// 	db.mux.RUnlock()
-// 	if db.opts.CopyOnGet {
-// 		return v.Copy()
-// 	}
-// 	return v
-// }
+// Set is a shorthand for an Update call with an optional Bucket chain.
+//	Example: v := db.Set("name", Value("Moonknight"), "users", "user-id-1")
+func (db *DB) Set(key string, val []byte, bucket ...string) error {
+	return db.Update(func(tx *Tx) error {
+		b := tx.tmpBucket
+		for _, bn := range bucket {
+			b = b.Bucket(bn)
+		}
+		b.Set(key, val)
+		return nil
+	})
+}
 
-// func (db *DB) Get(bucket, key string) Value {
-// 	return db.BucketGet(RootBucket, key)
-// }
+func (db *DB) isClosed() bool {
+	return int(db.f.Fd()) < 0
+}
 
-// func (db *DB) BucketGetObject(bucket, key string, out interface{}) error {
-// 	db.mux.RLock()
-// 	bv := db.s[bucket][key]
-// 	db.mux.RUnlock()
-// 	return db.opts.Unmarshaler(bv, out)
-// }
-
-// func (db *DB) GetObject(key string, out interface{}) error {
-// 	return db.BucketGetObject(RootBucket, key, out)
-// }
-
-// func (db *DB) BucketSet(bucket, key string, value []byte) error {
-// 	return db.Update(func(tx *Tx) error {
-// 		return tx.BucketSet(bucket, key, value)
-// 	})
-// }
-
-// func (db *DB) Set(key string, value []byte) error {
-// 	return db.BucketSet(RootBucket, key, value)
-// }
-
-// func (db *DB) BucketSetObject(bucket, key string, value interface{}) error {
-// 	return db.Update(func(tx *Tx) error {
-// 		return tx.BucketSetObject(bucket, key, value)
-// 	})
-// }
-
-// func (db *DB) SetObject(bucket, key string, value interface{}) error {
-// 	return db.BucketSetObject(RootBucket, key, value)
-// }
+func (db *DB) Close() error {
+	db.mux.Lock()
+	if c, ok := db.be.(io.Closer); ok {
+		c.Close()
+	}
+	err := db.f.Close()
+	db.mux.Unlock()
+	return err
+}
 
 // Compact compacts the database, transactions will be lost, however the counter will still be valid.
 func (db *DB) Compact() error {
@@ -299,12 +269,22 @@ func (db *DB) Compact() error {
 		return err
 	}
 
-	if err = db.opts.GetEncoder(f).Encode(&fileTx{
+	cp := db.opts.Backend()
+
+	if err = cp.Init(f, f); err != nil {
+		return err
+	}
+
+	if err = cp.Encode(&fileTx{
 		Index:     db.maxIndex,
 		TS:        time.Now().Unix(),
 		Changeset: &db.root,
 		Compact:   true,
 	}); err != nil {
+		return err
+	}
+
+	if err = cp.Flush(); err != nil {
 		return err
 	}
 
@@ -316,10 +296,19 @@ func (db *DB) Compact() error {
 
 	if err := os.Rename(f.Name(), db.f.Name()); err != nil {
 		f.Close()
-		log.Panicf("error renaming files, non of the files were overwritten\ndb file: %s\ncompacted db file: %s",
-			db.f.Name(), f.Name())
+		return &CompactError{f.Name(), db.f.Name(), err}
 	}
 
-	db.init(f)
+	db.be = cp
 	return err
+}
+
+type CompactError struct {
+	OldPath string
+	NewPath string
+	Err     error
+}
+
+func (ce *CompactError) Error() string {
+	return fmt.Sprintf("rename error (%v), old path: %s, new path: %s", ce.Err, ce.OldPath, ce.NewPath)
 }

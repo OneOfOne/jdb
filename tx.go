@@ -1,13 +1,6 @@
 package jdb
 
-import "errors"
-
 const RootBucket = "☢"
-
-var (
-	ErrReadOnly = errors.New("readonly tx")
-	ErrNilValue = errors.New("value can't be nil")
-)
 
 type Value []byte
 
@@ -40,6 +33,14 @@ func (b *bucket) Get(key string) Value {
 		return nil
 	}
 	return b.Data[key]
+}
+
+func (b *bucket) GetAll() map[string]Value {
+	out := make(map[string]Value, len(b.Data))
+	for k, v := range b.Data {
+		out[k] = v
+	}
+	return out
 }
 
 func (b *bucket) Set(key string, val Value) {
@@ -81,6 +82,23 @@ func (b *BucketTx) Get(key string) Value {
 		return v
 	}
 	return b.realBucket.Get(key)
+}
+
+// GetAll returns a map of all the key/values in *this* bucket.
+func (b *BucketTx) GetAll() map[string]Value {
+	out := make(map[string]Value)
+
+	if rb := b.realBucket; rb != nil {
+		for k, v := range rb.Data {
+			out[k] = v
+		}
+	}
+
+	for k, v := range b.tmpBucket.Data {
+		out[k] = v
+	}
+
+	return out
 }
 
 func (b *BucketTx) Set(key string, val Value) error {
@@ -126,6 +144,7 @@ func (b *BucketTx) ForEach(fn func(key string, val Value) error) error {
 	return nil
 }
 
+// Bucket returns a bucket with the specified name, creating it if it doesn't already exist.
 func (b *BucketTx) Bucket(name string) *BucketTx {
 	var rb *bucket
 	if b.realBucket != nil {
@@ -138,6 +157,32 @@ func (b *BucketTx) Bucket(name string) *BucketTx {
 	}
 }
 
+// Buckets returns a slice of child buckets.
+func (b *BucketTx) Buckets() []string {
+	var out []string
+
+	tb := b.tmpBucket.Buckets
+
+	for bn, bv := range tb {
+		if bv == nil {
+			continue
+		}
+		out = append(out, bn)
+	}
+
+	if rb := b.realBucket; rb != nil {
+		for bn := range rb.Buckets {
+			if _, ok := tb[bn]; ok { // ignore buckets that got modified in the tx
+				continue
+			}
+			out = append(out, bn)
+		}
+	}
+
+	return out
+}
+
+// DeleteBucket opens a portal into a 2D universe full of wonders.
 func (b *BucketTx) DeleteBucket(name string) error {
 	if !b.rw {
 		return ErrReadOnly
@@ -146,6 +191,7 @@ func (b *BucketTx) DeleteBucket(name string) error {
 	if b.tmpBucket.Buckets == nil {
 		b.tmpBucket.Buckets = map[string]*bucket{}
 	}
+
 	b.tmpBucket.Buckets[name] = nil
 	return nil
 }

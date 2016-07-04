@@ -1,31 +1,44 @@
 package jdb
 
 import (
+	"flag"
 	"io/ioutil"
 	"log"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
+var keepTmp = flag.Bool("k", false, "keep temp files")
+
 func init() {
 	log.SetFlags(log.Lshortfile)
+	flag.Parse()
 }
+
+func maxCompressionBackend() Backend { return GZipLevelBackend(JSONBackend(), 9) }
+
 func TestDB(t *testing.T) {
-	fp, err := ioutil.TempFile("", "jdb-")
+	dir, err := ioutil.TempDir("", "jdb-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fp.Close()
-	//defer os.Remove(fp.Name())
+	fp := filepath.Join(dir, "gzip-json.jdb")
 
-	log.Println(fp.Name())
-	db, err := New(fp.Name(), nil)
+	if *keepTmp {
+		log.Println("temp file:", fp)
+	} else {
+		defer os.RemoveAll(dir)
+	}
+
+	db, err := New(fp, &Opts{Backend: maxCompressionBackend})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	//defer os.RemoveFile(db.f.Name())
 	db.Update(func(tx *Tx) error {
-		return tx.Set("a", []byte("a"))
+		return tx.Set("a", Value("a"))
 	})
 
 	if err := db.Read(func(tx *Tx) error {
@@ -37,10 +50,10 @@ func TestDB(t *testing.T) {
 		t.Fatal("expected ErrReadOnly, got", err)
 	}
 
-	log.Println(db.Update(func(tx *Tx) error {
+	db.Update(func(tx *Tx) error {
 		tx.Set("b", []byte("b"))
 		return tx.Delete("a")
-	}))
+	})
 
 	db.Read(func(tx *Tx) error {
 		if tx.Get("a") != nil {
@@ -54,7 +67,7 @@ func TestDB(t *testing.T) {
 	}
 	db.Close()
 
-	if db, err = New(fp.Name(), nil); err != nil {
+	if db, err = New(fp, &Opts{Backend: maxCompressionBackend}); err != nil {
 		t.Fatal(err)
 	}
 
