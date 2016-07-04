@@ -72,6 +72,7 @@ func (b *bucket) DeleteBucket(name string) {
 }
 
 type BucketTx struct {
+	db         *DB
 	tmpBucket  *bucket
 	realBucket *bucket
 	rw         bool
@@ -82,6 +83,11 @@ func (b *BucketTx) Get(key string) Value {
 		return v
 	}
 	return b.realBucket.Get(key)
+}
+
+func (b *BucketTx) GetObject(key string, out interface{}) error {
+	v := b.Get(key)
+	return b.db.be.Unmarshal(v, out)
 }
 
 // GetAll returns a map of all the key/values in *this* bucket.
@@ -110,6 +116,14 @@ func (b *BucketTx) Set(key string, val Value) error {
 	}
 	b.tmpBucket.Set(key, val)
 	return nil
+}
+
+func (b *BucketTx) SetObject(key string, val interface{}) error {
+	v, err := b.db.be.Marshal(val)
+	if err != nil {
+		return err
+	}
+	return b.Set(key, v)
 }
 
 func (b *BucketTx) Delete(key string) error {
@@ -151,6 +165,7 @@ func (b *BucketTx) Bucket(name string) *BucketTx {
 		rb = b.realBucket.Buckets[name]
 	}
 	return &BucketTx{
+		db:         b.db,
 		tmpBucket:  b.tmpBucket.Bucket(name),
 		realBucket: rb,
 		rw:         b.rw,

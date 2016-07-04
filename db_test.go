@@ -1,4 +1,4 @@
-package jdb
+package jdb_test
 
 import (
 	"flag"
@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/OneOfOne/jdb"
 )
 
 var keepTmp = flag.Bool("k", false, "keep temp files")
@@ -15,8 +17,6 @@ func init() {
 	log.SetFlags(log.Lshortfile)
 	flag.Parse()
 }
-
-func maxCompressionBackend() Backend { return GZipLevelBackend(JSONBackend(), 9) }
 
 func TestDB(t *testing.T) {
 	dir, err := ioutil.TempDir("", "jdb-")
@@ -31,31 +31,31 @@ func TestDB(t *testing.T) {
 		defer os.RemoveAll(dir)
 	}
 
-	db, err := New(fp, &Opts{Backend: maxCompressionBackend})
+	db, err := jdb.New(fp, &jdb.Opts{Backend: jdb.GZipJSONBackend})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	//defer os.RemoveFile(db.f.Name())
-	db.Update(func(tx *Tx) error {
-		return tx.Set("a", Value("a"))
+	db.Update(func(tx *jdb.Tx) error {
+		return tx.Set("a", jdb.Value("a"))
 	})
 
-	if err := db.Read(func(tx *Tx) error {
+	if err := db.Read(func(tx *jdb.Tx) error {
 		if tx.Get("a") == nil {
 			t.Error("couldn't get a")
 		}
 		return tx.Set("a", []byte("a"))
-	}); err != ErrReadOnly {
+	}); err != jdb.ErrReadOnly {
 		t.Fatal("expected ErrReadOnly, got", err)
 	}
 
-	db.Update(func(tx *Tx) error {
+	db.Update(func(tx *jdb.Tx) error {
 		tx.Set("b", []byte("b"))
 		return tx.Delete("a")
 	})
 
-	db.Read(func(tx *Tx) error {
+	db.Read(func(tx *jdb.Tx) error {
 		if tx.Get("a") != nil {
 			t.Error("got a when we shouldn't have")
 		}
@@ -67,16 +67,16 @@ func TestDB(t *testing.T) {
 	}
 	db.Close()
 
-	if db, err = New(fp, &Opts{Backend: maxCompressionBackend}); err != nil {
+	if db, err = jdb.New(fp, &jdb.Opts{Backend: jdb.GZipJSONBackend}); err != nil {
 		t.Fatal(err)
 	}
 
-	db.Update(func(tx *Tx) error {
-		tx.Bucket("parent").Bucket("child").Set("the punisher", Value("coolest hero"))
+	db.Update(func(tx *jdb.Tx) error {
+		tx.Bucket("parent").Bucket("child").Set("the punisher", jdb.Value("coolest hero"))
 		return tx.Set("c", []byte("c"))
 	})
 
-	db.Read(func(tx *Tx) error {
+	db.Read(func(tx *jdb.Tx) error {
 		if tx.Get("b") == nil {
 			t.Error("coudln't load b :(")
 		}

@@ -105,6 +105,8 @@ func (db *DB) load() error {
 func (db *DB) createTx() *Tx {
 	return &Tx{
 		BucketTx: BucketTx{
+			db: db,
+
 			tmpBucket:  &bucket{},
 			realBucket: &db.root,
 		},
@@ -225,6 +227,11 @@ func (db *DB) Get(key string, bucket ...string) Value {
 	return b.Get(key)
 }
 
+func (db *DB) GetObject(key string, out interface{}, bucket ...string) error {
+	v := db.Get(key, bucket...)
+	return db.be.Unmarshal(v, out)
+}
+
 // Set is a shorthand for an Update call with an optional Bucket chain.
 //	Example: v := db.Set("name", Value("Moonknight"), "users", "user-id-1")
 func (db *DB) Set(key string, val []byte, bucket ...string) error {
@@ -236,6 +243,14 @@ func (db *DB) Set(key string, val []byte, bucket ...string) error {
 		b.Set(key, val)
 		return nil
 	})
+}
+
+func (db *DB) SetObject(key string, val interface{}, bucket ...string) error {
+	v, err := db.be.Marshal(val)
+	if err != nil {
+		return err
+	}
+	return db.Set(key, v, bucket...)
 }
 
 func (db *DB) isClosed() bool {
