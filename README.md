@@ -1,6 +1,6 @@
-# jdb ![Status](https://img.shields.io/badge/status-beta-red.svg)
+# jdb [![MIT licensed](https://img.shields.io/badge/license-apache-blue.svg)](https://raw.githubusercontent.com/OneOfOne/jdb/master/LICENSE) ![Status](https://img.shields.io/badge/status-beta-red.svg)
 
-### A file-backed ACID in-memory k/v data store.
+## **A file-backed ACID in-memory k/v data store.**
 
 ## FAQ
 
@@ -62,3 +62,9 @@ err := db.SetObject("map in a sub-bucket", map[string]bool{
 * Replay / Filter support.
 * Per-bucket unique ID generation.
 * Archiving support.
+
+## License
+
+Apache v2.0 (see [LICENSE](https://raw.githubusercontent.com/OneOfOne/jdb/master/LICENSE) file).
+
+Copyright 2016-2016 Ahmed <[OneOfOne](https://github.com/OneOfOne/)> W.
