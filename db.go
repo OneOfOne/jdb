@@ -83,7 +83,6 @@ func (db *DB) load() error {
 		return nil
 	}
 
-	db.f.Seek(0, os.SEEK_SET)
 	for {
 		var tx fileTx
 		err := db.be.Decode(&tx)
