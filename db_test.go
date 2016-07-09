@@ -6,9 +6,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
+	"crypto/sha512"
+
 	"github.com/OneOfOne/jdb"
+	"github.com/OneOfOne/jdb/backends/crypto"
 	"github.com/boltdb/bolt"
 )
 
@@ -42,7 +46,7 @@ func TestMain(m *testing.M) {
 func TestDB(t *testing.T) {
 	fp := filepath.Join(tmpDir, "gzip-json.jdb")
 
-	db, err := jdb.New(fp, &jdb.Opts{Backend: jdb.GZipJSONBackend})
+	db, err := jdb.New(fp, &jdb.Opts{Backend: jdb.GZipLevelJSONBackend(9)})
 	if err != nil {
 		t.Fatal(fp, err)
 	}
@@ -98,6 +102,48 @@ func TestDB(t *testing.T) {
 		return nil
 	})
 
+	db.Close()
+}
+
+func TestCryptoBackend(t *testing.T) {
+	fp := filepath.Join(tmpDir, "crypto-gzip-json.jdb")
+	key := sha512.Sum512_256([]byte("hello world"))
+	opts := &jdb.Opts{Backend: crypto.AESBackend(jdb.JSONBackend, key[:])}
+	db, err := jdb.New(fp, opts)
+	if err != nil {
+		t.Fatal(fp, err)
+	}
+	for i := 0; i < 10; i++ {
+		bn := "bucket-" + strconv.Itoa(i)
+		if err := db.Update(func(tx *jdb.Tx) error {
+			b := tx.Bucket(bn)
+			for i := 0; i < 100; i++ {
+				kn := strconv.Itoa(i)
+				b.Set(kn, jdb.Value(kn))
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	db, err = jdb.New(fp, opts)
+	if err != nil {
+		t.Fatal(fp, err)
+	}
+	db.Read(func(tx *jdb.Tx) error {
+		for i := 0; i < 10; i++ {
+			bn := "bucket-" + strconv.Itoa(i)
+			b := tx.Bucket(bn)
+			for i := 0; i < 100; i++ {
+				kn := strconv.Itoa(i)
+				if v := b.Get(kn); v.String() != kn {
+					t.Errorf("expected %s, got %s", kn, v)
+				}
+			}
+		}
+		return nil
+	})
 	db.Close()
 }
 

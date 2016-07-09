@@ -110,4 +110,6 @@ func (j *gzipBackend) Close() error {
 func GZipJSONBackend() Backend { return GZipBackend(JSONBackend()) }
 
 // GZipLevelJSONBackend is a shorthand for GZipLevelBackend(JSONBackend(), level)
-func GZipLevelJSONBackend(level int) Backend { return GZipLevelBackend(JSONBackend(), level) }
+func GZipLevelJSONBackend(level int) func() Backend {
+	return func() Backend { return GZipLevelBackend(JSONBackend(), level) }
+}
