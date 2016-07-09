@@ -4,6 +4,7 @@ import (
 	"flag"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 var (
 	keepTmp           = flag.Bool("k", false, "keep temp files")
 	boltDefaultBucket = []byte("bucket")
+	key               = sha512.Sum512_256([]byte("hello world"))
 	tmpDir            string
 )
 
@@ -43,13 +45,17 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func getJDB(tb testing.TB, fp string, be func() jdb.Backend) *jdb.DB {
+	db, err := jdb.New(fp, &jdb.Opts{Backend: be})
+	if err != nil {
+		tb.Fatal(fp, err)
+	}
+	return db
+}
+
 func TestDB(t *testing.T) {
 	fp := filepath.Join(tmpDir, "gzip-json.jdb")
-
-	db, err := jdb.New(fp, &jdb.Opts{Backend: jdb.GZipLevelJSONBackend(9)})
-	if err != nil {
-		t.Fatal(fp, err)
-	}
+	db := getJDB(t, fp, jdb.GZipLevelJSONBackend(9))
 
 	//defer os.RemoveFile(db.f.Name())
 	db.Update(func(tx *jdb.Tx) error {
@@ -82,6 +88,7 @@ func TestDB(t *testing.T) {
 	}
 	db.Close()
 
+	var err error
 	if db, err = jdb.New(fp, &jdb.Opts{Backend: jdb.GZipJSONBackend}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +114,7 @@ func TestDB(t *testing.T) {
 
 func TestCryptoBackend(t *testing.T) {
 	fp := filepath.Join(tmpDir, "crypto-gzip-json.jdb")
-	key := sha512.Sum512_256([]byte("hello world"))
-	opts := &jdb.Opts{Backend: crypto.AESBackend(jdb.JSONBackend, key[:])}
+	opts := &jdb.Opts{Backend: crypto.AESBackend(jdb.GZipJSONBackend, key[:])}
 	db, err := jdb.New(fp, opts)
 	if err != nil {
 		t.Fatal(fp, err)
@@ -147,24 +153,56 @@ func TestCryptoBackend(t *testing.T) {
 	db.Close()
 }
 
-func BenchmarkJDBSameTxReadWrite(b *testing.B) {
-	db, err := jdb.New(filepath.Join(tmpDir, "bench-rwtx.jdb"), nil)
+func benchJDB(b *testing.B, name string, sameTx bool, be func() jdb.Backend) {
+	name = strconv.Itoa(rand.Int()) + "-" + name
+	db, err := jdb.New(filepath.Join(tmpDir, name), nil)
 	if err != nil {
-		b.Fatal(err)
+		b.Fatal(name, err)
 	}
 	defer db.Close()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			db.Update(func(tx *jdb.Tx) error {
-				tx.Set("value", []byte("value"))
-				if string(tx.Get("value")) != "value" {
+	var testFn func(pb *testing.PB)
+	if sameTx {
+		testFn = func(pb *testing.PB) {
+			for pb.Next() {
+				db.Update(func(tx *jdb.Tx) error {
+					tx.Set("value", []byte("value"))
+					if string(tx.Get("value")) != "value" {
+						b.Fatal(name, "something went wrong")
+					}
+					return nil
+				})
+			}
+		}
+	} else {
+		testFn = func(pb *testing.PB) {
+			for pb.Next() {
+				db.Set("value", []byte("value"))
+				if string(db.Get("value")) != "value" {
 					b.Fatal("something went wrong")
 				}
-				return nil
-			})
+			}
 		}
-	})
+	}
+	b.ResetTimer()
+	b.RunParallel(testFn)
+}
+
+func BenchmarkJDBSameTxReadWriteJSON(b *testing.B) {
+	benchJDB(b, "SameTxReadWriteJSON", true, jdb.JSONBackend)
+}
+
+func BenchmarkJDBSameTxReadWriteGzipJSON(b *testing.B) {
+	benchJDB(b, "SameTxReadWriteGzipJSON", true, jdb.GZipJSONBackend)
+}
+
+func BenchmarkJDBSameTxReadWriteCryptoJSON(b *testing.B) {
+	be := crypto.AESBackend(jdb.JSONBackend, key[:])
+	benchJDB(b, "SameTxReadWriteCryptoJSON", true, be)
+}
+
+func BenchmarkJDBSameTxReadWriteCryptoGzipJSON(b *testing.B) {
+	be := crypto.AESBackend(jdb.GZipJSONBackend, key[:])
+	benchJDB(b, "SameTxReadWriteCryptoGzipJSON", true, be)
 }
 
 func initBolt(name string) (*bolt.DB, error) {
@@ -200,21 +238,22 @@ func BenchmarkBoltSameTxReadWrite(b *testing.B) {
 	})
 }
 
-func BenchmarkJDBSeparateReadWrite(b *testing.B) {
-	db, err := jdb.New(filepath.Join(tmpDir, "bench-rw.jdb"), nil)
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer db.Close()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			db.Set("value", []byte("value"))
-			if string(db.Get("value")) != "value" {
-				b.Fatal("something went wrong")
-			}
-		}
-	})
+func BenchmarkJDBSeparateReadWriteJSON(b *testing.B) {
+	benchJDB(b, "SeparateTxReadWriteJSON", false, jdb.JSONBackend)
+}
+
+func BenchmarkJDBSeparateReadWriteGzipJSON(b *testing.B) {
+	benchJDB(b, "SeparateTxReadWriteGzipJSON", false, jdb.GZipJSONBackend)
+}
+
+func BenchmarkJDBSeparateReadWriteCryptoJSON(b *testing.B) {
+	be := crypto.AESBackend(jdb.JSONBackend, key[:])
+	benchJDB(b, "SeparateTxReadWriteCryptoJSON", false, be)
+}
+
+func BenchmarkJDBSeparateReadWriteCryptoGzipJSON(b *testing.B) {
+	be := crypto.AESBackend(jdb.GZipJSONBackend, key[:])
+	benchJDB(b, "SeparateTxReadWriteCryptoGzipJSON", false, be)
 }
 
 func BenchmarkBoltSeparateReadWrite(b *testing.B) {

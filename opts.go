@@ -29,20 +29,6 @@ type Backend interface {
 	Unmarshal(in []byte, out interface{}) error // used by GetObject
 }
 
-// DummyBackend returns a DummyBackend where all methods returns ErrNotImpl
-func DummyBackend() Backend { return dummyBackend{} }
-
-type dummyBackend struct{}
-
-func (dummyBackend) Init(w io.Writer, r io.Reader) error        { return ErrNotImpl }
-func (dummyBackend) Flush() error                               { return ErrNotImpl }
-func (dummyBackend) Encode(v interface{}) error                 { return ErrNotImpl }
-func (dummyBackend) Decode(v interface{}) error                 { return ErrNotImpl }
-func (dummyBackend) Marshal(in interface{}) ([]byte, error)     { return nil, ErrNotImpl }
-func (dummyBackend) Unmarshal(in []byte, out interface{}) error { return ErrNotImpl }
-
-func (dummyBackend) New() Backend { return dummyBackend{} }
-
 // JSONBackend returns a json backend.
 func JSONBackend() Backend { return &jsonBackend{} }
 
@@ -53,7 +39,6 @@ type jsonBackend struct {
 
 func (j *jsonBackend) Init(w io.Writer, r io.Reader) error {
 	j.enc, j.dec = json.NewEncoder(w), json.NewDecoder(r)
-
 	return nil
 }
 
@@ -77,13 +62,12 @@ type gzipBackend struct {
 	gzw   *gzip.Writer
 }
 
-func (g *gzipBackend) Init(w io.Writer, r io.Reader) error {
-	var err error
+func (g *gzipBackend) Init(w io.Writer, r io.Reader) (err error) {
 	if g.gzw, err = gzip.NewWriterLevel(w, g.level); err != nil {
 		return err
 	}
 	gzr := &gzip.Reader{}
-	if err := gzr.Reset(r); err != nil && err != io.EOF {
+	if err = gzr.Reset(r); err != nil && err != io.EOF {
 		return err
 	}
 	return g.be.Init(g.gzw, gzr)
@@ -97,7 +81,13 @@ func (g *gzipBackend) Flush() error {
 }
 
 func (g *gzipBackend) Encode(v interface{}) error { return g.be.Encode(v) }
-func (g *gzipBackend) Decode(v interface{}) error { return g.be.Decode(v) }
+func (g *gzipBackend) Decode(v interface{}) error {
+	err := g.be.Decode(v)
+	if err == io.ErrUnexpectedEOF { // because gzip likes to fuck with it....
+		err = io.EOF
+	}
+	return err
+}
 
 func (g *gzipBackend) Marshal(in interface{}) ([]byte, error)     { return g.be.Marshal(in) }
 func (g *gzipBackend) Unmarshal(in []byte, out interface{}) error { return g.be.Unmarshal(in, out) }

@@ -62,7 +62,6 @@ func New(fp string, opts *Opts) (*DB, error) {
 	if err = db.be.Init(f, f); err != nil {
 		return nil, err
 	}
-
 	db.txPool.New = func() interface{} { return db.createTx() }
 
 	if err = db.load(); err != nil {
@@ -85,8 +84,7 @@ func (db *DB) load() error {
 
 	for {
 		var tx fileTx
-		err := db.be.Decode(&tx)
-		if err != nil {
+		if err = db.be.Decode(&tx); err != nil {
 			if err == io.EOF {
 				err = nil
 			}
@@ -192,6 +190,9 @@ func (db *DB) Read(fn func(tx *Tx) error) error {
 	return fn(tx)
 }
 
+// View is an alias for Read, to simplify moving code from bolt.
+func (db *DB) View(fn func(tx *Tx) error) error { return db.Read(fn) }
+
 func (db *DB) Update(fn func(tx *Tx) error) error {
 	tx := db.getTx(true)
 	db.mux.Lock()
@@ -268,6 +269,8 @@ func (db *DB) close() error {
 	}
 	return db.f.Close()
 }
+
+func (db *DB) Name() string { return db.f.Name() }
 
 // Compact compacts the database, transactions will be lost, however the counter will still be valid.
 func (db *DB) Compact() error {

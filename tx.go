@@ -24,8 +24,8 @@ type Tx struct {
 }
 
 type bucket struct {
-	Buckets map[string]*bucket `json:"buckets,omitempty"`
-	Data    map[string]Value   `json:"data,omitempty"`
+	Buckets map[string]*bucket `json:"b,omitempty"`
+	Data    map[string]Value   `json:"d,omitempty"`
 }
 
 func (b *bucket) Get(key string) Value {

@@ -23,16 +23,28 @@ an mmap'ed k/v store like the excellent [boltdb](https://github.com/boltdb/bolt)
 ## Benchmarks
 
 ```
-➤ go test -v -bench=. -benchmem -benchtime=5s
+➤ go test -benchmem -bench=.  -v  -benchtime=3s
 === RUN   TestDB
 --- PASS: TestDB (0.00s)
-BenchmarkJDBSameTxReadWrite-8            3000000              2808 ns/op             312 B/op         10 allocs/op
-BenchmarkBoltSameTxReadWrite-8           1000000              8171 ns/op            6309 B/op         44 allocs/op
+=== RUN   TestCryptoBackend
+--- PASS: TestCryptoBackend (0.00s)
+BenchmarkJDBSameTxReadWriteJSON-8               2000000     2898 ns/op             312 B/op         10 allocs/op
+BenchmarkJDBSameTxReadWriteGzipJSON-8           2000000     3027 ns/op             312 B/op         10 allocs/op
+BenchmarkJDBSameTxReadWriteCryptoJSON-8         1000000     3077 ns/op             312 B/op         10 allocs/op
+BenchmarkJDBSameTxReadWriteCryptoGzipJSON-8     2000000     2908 ns/op             312 B/op         10 allocs/op
 
-BenchmarkJDBSeparateReadWrite-8          3000000              2935 ns/op             312 B/op         10 allocs/op
-BenchmarkBoltSeparateReadWrite-8         1000000             12122 ns/op            9495 B/op         53 allocs/op
+BenchmarkBoltSameTxReadWrite-8                   500000     8682 ns/op            6309 B/op         44 allocs/op
+
+BenchmarkJDBSeparateReadWriteJSON-8             1000000     3000 ns/op             312 B/op         10 allocs/op
+BenchmarkJDBSeparateReadWriteGzipJSON-8         1000000     3014 ns/op             312 B/op         10 allocs/op
+BenchmarkJDBSeparateReadWriteCryptoJSON-8       2000000     3020 ns/op             312 B/op         10 allocs/op
+BenchmarkJDBSeparateReadWriteCryptoGzipJSON-8   1000000     3000 ns/op             312 B/op         10 allocs/op
+
+BenchmarkBoltSeparateReadWrite-8                 500000    16040 ns/op           12416 B/op         53 allocs/op
+
 PASS
-ok      github.com/OneOfOne/jdb 48.915s
+ok      github.com/OneOfOne/jdb 60.457s
+
 ```
 
 ## Examples
